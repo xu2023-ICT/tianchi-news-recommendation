@@ -1,19 +1,10 @@
 import logging
 import os
 import pickle
-import signal
 from random import sample
-
-import multitasking
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-
-max_threads = multitasking.config['CPU_CORES']
-multitasking.set_max_threads(max_threads)
-multitasking.set_engine('process')
-signal.signal(signal.SIGINT, multitasking.killall)
-
 
 class Logger(object):
     level_relations = {
@@ -148,10 +139,16 @@ def evaluate(df, total):
     return hitrate_5, mrr_5, hitrate_10, mrr_10, hitrate_20, mrr_20, hitrate_40, mrr_40, hitrate_50, mrr_50
 
 
-@multitasking.task
-def gen_sub_multitasking(test_users, prediction, all_articles, worker_id):
-    lines = []
+def gen_sub(prediction):
+    prediction.sort_values(['user_id', 'pred'],
+                         inplace=True,
+                         ascending=[True, False])
 
+    all_articles = set(prediction['article_id'].values)
+    sub_sample = pd.read_csv('../data/testA_click_log.csv')
+    test_users = sub_sample.user_id.unique()
+    
+    lines = []
     for test_user in tqdm(test_users):
         g = prediction[prediction['user_id'] == test_user]
         g = g.head(5)
@@ -159,50 +156,11 @@ def gen_sub_multitasking(test_users, prediction, all_articles, worker_id):
 
         if len(set(items)) < 5:
             buchong = all_articles - set(items)
-            buchong = sample(buchong, 5 - len(set(items)))
+            buchong = sample(list(buchong), 5 - len(set(items)))
             items += buchong
 
         assert len(set(items)) == 5
-
         lines.append([test_user] + items)
-
-    os.makedirs('../user_data/tmp/sub', exist_ok=True)
-
-    with open(f'../user_data/tmp/sub/{worker_id}.pkl', 'wb') as f:
-        pickle.dump(lines, f)
-
-
-def gen_sub(prediction):
-    prediction.sort_values(['user_id', 'pred'],
-                           inplace=True,
-                           ascending=[True, False])
-
-    all_articles = set(prediction['article_id'].values)
-
-    sub_sample = pd.read_csv('../tcdata/testB_click_log_Test_B.csv')
-    test_users = sub_sample.user_id.unique()
-
-    n_split = max_threads
-    total = len(test_users)
-    n_len = total // n_split
-
-    # 清空临时文件夹
-    for path, _, file_list in os.walk('../user_data/tmp/sub'):
-        for file_name in file_list:
-            os.remove(os.path.join(path, file_name))
-
-    for i in range(0, total, n_len):
-        part_users = test_users[i:i + n_len]
-        gen_sub_multitasking(part_users, prediction, all_articles, i)
-
-    multitasking.wait_for_tasks()
-
-    lines = []
-    for path, _, file_list in os.walk('../user_data/tmp/sub'):
-        for file_name in file_list:
-            with open(os.path.join(path, file_name), 'rb') as f:
-                line = pickle.load(f)
-                lines += line
 
     df_sub = pd.DataFrame(lines)
     df_sub.columns = [

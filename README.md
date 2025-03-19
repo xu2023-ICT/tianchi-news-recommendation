@@ -12,3 +12,12 @@ pip install requirements.txt
 cd code
 bash test.sh
 ```
+
+# update
+将test.sh的代码依次运行即可，注意，我在运行data.py时必须把python版本改成3.7，如果跑不了记得conda整个3.7的环境
+
+电脑性能还可以的可以跑gpu版本，binework的会快不少，4060ti可以20分钟内跑完，整体比较费时间的就是rank和这个
+
+最后的排序由于之前老是一步报错就得重新来，直接改成了notebook，自己修改的时候也可以跟着来。
+
+然后本来还想试试冷启动和热度召回的，但是效果很不好，就没继续做了。

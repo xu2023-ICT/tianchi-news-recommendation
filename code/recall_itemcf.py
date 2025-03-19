@@ -3,33 +3,26 @@ import math
 import os
 import pickle
 import random
-import signal
 from collections import defaultdict
-from random import shuffle
-
-import multitasking
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
 from utils import Logger, evaluate
 
-max_threads = multitasking.config['CPU_CORES']
-multitasking.set_max_threads(max_threads)
-multitasking.set_engine('process')
-signal.signal(signal.SIGINT, multitasking.killall)
-
 random.seed(2020)
 
 # 命令行参数
 parser = argparse.ArgumentParser(description='itemcf 召回')
-parser.add_argument('--mode', default='valid')
-parser.add_argument('--logfile', default='test.log')
+parser.add_argument('--mode', default='valid', choices=['valid', 'online', 'test'])
+parser.add_argument('--logfile', default='test_itemcf.log')
+parser.add_argument('--test_size', type=int, default=1000, help='测试模式下的样本数')
 
 args = parser.parse_args()
 
 mode = args.mode
 logfile = args.logfile
+test_size = args.test_size
 
 # 初始化日志
 os.makedirs('../user_data/log', exist_ok=True)
@@ -73,8 +66,8 @@ def cal_sim(df):
     return sim_dict, user_item_dict
 
 
-@multitasking.task
-def recall(df_query, item_sim, user_item_dict, worker_id):
+
+def recall(df_query, item_sim, user_item_dict):
     data_list = []
 
     for user_id, item_id in tqdm(df_query.values):
@@ -116,23 +109,33 @@ def recall(df_query, item_sim, user_item_dict, worker_id):
 
         data_list.append(df_temp)
 
-    df_data = pd.concat(data_list, sort=False)
-
-    os.makedirs('../user_data/tmp/itemcf', exist_ok=True)
-    df_data.to_pickle(f'../user_data/tmp/itemcf/{worker_id}.pkl')
-
+    return pd.concat(data_list, sort=False)
 
 if __name__ == '__main__':
     if mode == 'valid':
         df_click = pd.read_pickle('../user_data/data/offline/click.pkl')
         df_query = pd.read_pickle('../user_data/data/offline/query.pkl')
-
         os.makedirs('../user_data/sim/offline', exist_ok=True)
         sim_pkl_file = '../user_data/sim/offline/itemcf_sim.pkl'
+    elif mode == 'test':
+        # 测试模式：读取部分数据
+        df_click = pd.read_pickle('../user_data/data/offline/click.pkl')
+        df_query = pd.read_pickle('../user_data/data/offline/query.pkl')
+        
+        # 随机选择一部分用户
+        test_users = df_query['user_id'].sample(n=test_size, random_state=2024)
+        df_query = df_query[df_query['user_id'].isin(test_users)]
+        df_click = df_click[df_click['user_id'].isin(test_users)]
+        
+        os.makedirs('../user_data/sim/test', exist_ok=True)
+        sim_pkl_file = '../user_data/sim/test/itemcf_sim.pkl'
+        
+        log.info(f'测试模式：选取{test_size}个用户')
+        log.info(f'df_click shape: {df_click.shape}')
+        log.info(f'df_query shape: {df_query.shape}')
     else:
         df_click = pd.read_pickle('../user_data/data/online/click.pkl')
         df_query = pd.read_pickle('../user_data/data/online/query.pkl')
-
         os.makedirs('../user_data/sim/online', exist_ok=True)
         sim_pkl_file = '../user_data/sim/online/itemcf_sim.pkl'
 
@@ -144,52 +147,29 @@ if __name__ == '__main__':
     pickle.dump(item_sim, f)
     f.close()
 
-    # 召回
-    n_split = max_threads
-    all_users = df_query['user_id'].unique()
-    shuffle(all_users)
-    total = len(all_users)
-    n_len = total // n_split
+    # 直接处理所有数据
+    df_data = recall(df_query, item_sim, user_item_dict)
 
-    # 清空临时文件夹
-    for path, _, file_list in os.walk('../user_data/tmp/itemcf'):
-        for file_name in file_list:
-            os.remove(os.path.join(path, file_name))
-
-    for i in range(0, total, n_len):
-        part_users = all_users[i:i + n_len]
-        df_temp = df_query[df_query['user_id'].isin(part_users)]
-        recall(df_temp, item_sim, user_item_dict, i)
-
-    multitasking.wait_for_tasks()
-    log.info('合并任务')
-
-    df_data = pd.DataFrame()
-    for path, _, file_list in os.walk('../user_data/tmp/itemcf'):
-        for file_name in file_list:
-            df_temp = pd.read_pickle(os.path.join(path, file_name))
-            df_data = df_data.append(df_temp)
-
-    # 必须加，对其进行排序
+    # 对结果进行排序
     df_data = df_data.sort_values(['user_id', 'sim_score'],
-                                  ascending=[True,
-                                             False]).reset_index(drop=True)
+                                  ascending=[True, False]).reset_index(drop=True)
     log.debug(f'df_data.head: {df_data.head()}')
 
     # 计算召回指标
     if mode == 'valid':
         log.info(f'计算召回指标')
-
         total = df_query[df_query['click_article_id'] != -1].user_id.nunique()
-
         hitrate_5, mrr_5, hitrate_10, mrr_10, hitrate_20, mrr_20, hitrate_40, mrr_40, hitrate_50, mrr_50 = evaluate(
             df_data[df_data['label'].notnull()], total)
-
         log.debug(
             f'itemcf: {hitrate_5}, {mrr_5}, {hitrate_10}, {mrr_10}, {hitrate_20}, {mrr_20}, {hitrate_40}, {mrr_40}, {hitrate_50}, {mrr_50}'
         )
+
     # 保存召回结果
     if mode == 'valid':
         df_data.to_pickle('../user_data/data/offline/recall_itemcf.pkl')
+    elif mode == 'test':
+        os.makedirs('../user_data/data/test', exist_ok=True)
+        df_data.to_pickle('../user_data/data/test/recall_itemcf.pkl')
     else:
         df_data.to_pickle('../user_data/data/online/recall_itemcf.pkl')

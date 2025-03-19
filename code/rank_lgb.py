@@ -48,17 +48,25 @@ def train_model(df_feature, df_query):
             df_train.columns))
     feature_names.sort()
 
-    model = lgb.LGBMClassifier(num_leaves=64,
-                               max_depth=10,
-                               learning_rate=0.05,
-                               n_estimators=10000,
-                               subsample=0.8,
-                               feature_fraction=0.8,
-                               reg_alpha=0.5,
-                               reg_lambda=0.5,
-                               random_state=seed,
-                               importance_type='gain',
-                               metric=None)
+
+    model = lgb.LGBMClassifier(
+        num_leaves=64,
+        max_depth=10,
+        learning_rate=0.05,
+        n_estimators=10000,
+        subsample=0.8,
+        feature_fraction=0.8,
+        reg_alpha=0.5,
+        reg_lambda=0.5,
+        random_state=seed,
+        importance_type='gain',
+        metric=None,
+        # GPU 相关参数
+        device_type='gpu',  # 使用 device_type 替代 device
+        gpu_device_id=0,
+        gpu_use_dp=True,    # 使用双精度
+        boost_from_average=True
+    )
 
     oof = []
     prediction = df_test[['user_id', 'article_id']]
@@ -80,13 +88,20 @@ def train_model(df_feature, df_query):
             f'\nFold_{fold_id + 1} Training ================================\n'
         )
 
-        lgb_model = model.fit(X_train,
-                              Y_train,
-                              eval_names=['train', 'valid'],
-                              eval_set=[(X_train, Y_train), (X_val, Y_val)],
-                              verbose=100,
-                              eval_metric='auc',
-                              early_stopping_rounds=100)
+        # 创建回调函数列表
+        callbacks = [
+            lgb.log_evaluation(period=100),
+            lgb.early_stopping(stopping_rounds=100)
+        ]
+
+        lgb_model = model.fit(
+            X_train,
+            Y_train,
+            eval_set=[(X_train, Y_train), (X_val, Y_val)],
+            eval_names=['train', 'valid'],
+            eval_metric='auc',
+            callbacks=callbacks
+        )
 
         pred_val = lgb_model.predict_proba(
             X_val, num_iteration=lgb_model.best_iteration_)[:, 1]
@@ -157,8 +172,8 @@ def online_predict(df_test):
     # 生成提交文件
     df_sub = gen_sub(prediction)
     df_sub.sort_values(['user_id'], inplace=True)
-    os.makedirs('../prediction_result', exist_ok=True)
-    df_sub.to_csv(f'../prediction_result/result.csv', index=False)
+    os.makedirs('prediction_result', exist_ok=True)
+    df_sub.to_csv(f'prediction_result/result.csv', index=False)
 
 
 if __name__ == '__main__':

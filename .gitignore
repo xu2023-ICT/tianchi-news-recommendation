@@ -1,5 +1,5 @@
 .vscode
 */__pycache__
-tcdata
+data
 user_data
 prediction_result

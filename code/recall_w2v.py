@@ -3,12 +3,8 @@ import math
 import os
 import pickle
 import random
-import signal
 import warnings
 from collections import defaultdict
-from random import shuffle
-
-import multitasking
 import numpy as np
 import pandas as pd
 from annoy import AnnoyIndex
@@ -18,25 +14,20 @@ from tqdm import tqdm
 from utils import Logger, evaluate
 
 warnings.filterwarnings('ignore')
-
-max_threads = multitasking.config['CPU_CORES']
-multitasking.set_max_threads(max_threads)
-multitasking.set_engine('process')
-signal.signal(signal.SIGINT, multitasking.killall)
-
 seed = 2020
-random.seed(seed)
+random.seed(2020)
 
 # 命令行参数
 parser = argparse.ArgumentParser(description='w2v 召回')
-parser.add_argument('--mode', default='valid')
-parser.add_argument('--logfile', default='test.log')
+parser.add_argument('--mode', default='valid', choices=['valid', 'online', 'test'])
+parser.add_argument('--logfile', default='test_w2v.log')
+parser.add_argument('--test_size', type=int, default=1000, help='测试模式下的样本数')
 
 args = parser.parse_args()
 
 mode = args.mode
 logfile = args.logfile
-
+test_size = args.test_size
 # 初始化日志
 os.makedirs('../user_data/log', exist_ok=True)
 log = Logger(f'../user_data/log/{logfile}').logger
@@ -61,7 +52,7 @@ def word2vec(df_, f1, f2, model_path):
         model = Word2Vec.load(f'{model_path}/w2v.m')
     else:
         model = Word2Vec(sentences=sentences,
-                         size=256,
+                         vector_size=256,
                          window=3,
                          min_count=1,
                          sg=1,
@@ -69,29 +60,33 @@ def word2vec(df_, f1, f2, model_path):
                          seed=seed,
                          negative=5,
                          workers=10,
-                         iter=1)
+                         epochs=1)
         model.save(f'{model_path}/w2v.m')
 
     article_vec_map = {}
     for word in set(words):
-        if word in model:
-            article_vec_map[int(word)] = model[word]
+        if word in model.wv:
+            article_vec_map[int(word)] = model.wv[word]
 
     return article_vec_map
 
 
-@multitasking.task
-def recall(df_query, article_vec_map, article_index, user_item_dict,
-           worker_id):
+def recall(df_query, article_vec_map, article_index, user_item_dict):
     data_list = []
 
     for user_id, item_id in tqdm(df_query.values):
         rank = defaultdict(int)
+        
+        if user_id not in user_item_dict:
+            continue
 
         interacted_items = user_item_dict[user_id]
         interacted_items = interacted_items[-1:]
 
         for item in interacted_items:
+            if item not in article_vec_map:
+                continue
+                
             article_vec = article_vec_map[item]
 
             item_ids, distances = article_index.get_nns_by_vector(
@@ -124,10 +119,7 @@ def recall(df_query, article_vec_map, article_index, user_item_dict,
 
         data_list.append(df_temp)
 
-    df_data = pd.concat(data_list, sort=False)
-
-    os.makedirs('../user_data/tmp/w2v', exist_ok=True)
-    df_data.to_pickle('../user_data/tmp/w2v/{}.pkl'.format(worker_id))
+    return pd.concat(data_list, sort=False)
 
 
 if __name__ == '__main__':
@@ -140,6 +132,24 @@ if __name__ == '__main__':
 
         w2v_file = '../user_data/data/offline/article_w2v.pkl'
         model_path = '../user_data/model/offline'
+    elif mode == 'test':
+        # 测试模式：读取部分数据
+        df_click = pd.read_pickle('../user_data/data/offline/click.pkl')
+        df_query = pd.read_pickle('../user_data/data/offline/query.pkl')
+        
+        # 随机选择一部分用户
+        test_users = df_query['user_id'].sample(n=test_size, random_state=2024)
+        df_query = df_query[df_query['user_id'].isin(test_users)]
+        df_click = df_click[df_click['user_id'].isin(test_users)]
+        
+        os.makedirs('../user_data/data/test', exist_ok=True)
+        os.makedirs('../user_data/model/test', exist_ok=True)
+        w2v_file = '../user_data/data/test/article_w2v.pkl'
+        model_path = '../user_data/model/test'
+        
+        log.info(f'测试模式：选取{test_size}个用户')
+        log.info(f'df_click shape: {df_click.shape}')
+        log.info(f'df_query shape: {df_query.shape}')
     else:
         df_click = pd.read_pickle('../user_data/data/online/click.pkl')
         df_query = pd.read_pickle('../user_data/data/online/query.pkl')
@@ -174,35 +184,11 @@ if __name__ == '__main__':
         zip(user_item_['user_id'], user_item_['click_article_id']))
 
     # 召回
-    n_split = max_threads
-    all_users = df_query['user_id'].unique()
-    shuffle(all_users)
-    total = len(all_users)
-    n_len = total // n_split
+    df_data = recall(df_query, article_vec_map, article_index, user_item_dict)
 
-    # 清空临时文件夹
-    for path, _, file_list in os.walk('../tmp/w2v'):
-        for file_name in file_list:
-            os.remove(os.path.join(path, file_name))
-
-    for i in range(0, total, n_len):
-        part_users = all_users[i:i + n_len]
-        df_temp = df_query[df_query['user_id'].isin(part_users)]
-        recall(df_temp, article_vec_map, article_index, user_item_dict, i)
-
-    multitasking.wait_for_tasks()
-    log.info('合并任务')
-
-    df_data = pd.DataFrame()
-    for path, _, file_list in os.walk('../user_data/tmp/w2v'):
-        for file_name in file_list:
-            df_temp = pd.read_pickle(os.path.join(path, file_name))
-            df_data = df_data.append(df_temp)
-
-    # 必须加，对其进行排序
+    # 对结果进行排序
     df_data = df_data.sort_values(['user_id', 'sim_score'],
-                                  ascending=[True,
-                                             False]).reset_index(drop=True)
+                                  ascending=[True, False]).reset_index(drop=True)
     log.debug(f'df_data.head: {df_data.head()}')
 
     # 计算召回指标
@@ -220,5 +206,7 @@ if __name__ == '__main__':
     # 保存召回结果
     if mode == 'valid':
         df_data.to_pickle('../user_data/data/offline/recall_w2v.pkl')
+    elif mode == 'test':
+        df_data.to_pickle('../user_data/data/test/recall_w2v.pkl')
     else:
         df_data.to_pickle('../user_data/data/online/recall_w2v.pkl')

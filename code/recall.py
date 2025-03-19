@@ -26,8 +26,9 @@ random.seed(2020)
 
 # 命令行参数
 parser = argparse.ArgumentParser(description='召回合并')
-parser.add_argument('--mode', default='valid')
-parser.add_argument('--logfile', default='test.log')
+parser.add_argument('--mode', default='valid', choices=['valid', 'online', 'test'])
+parser.add_argument('--logfile', default='test_recall.log')
+parser.add_argument('--test_size', type=int, default=1000, help='测试模式下的样本数')
 
 args = parser.parse_args()
 
@@ -93,6 +94,15 @@ if __name__ == '__main__':
         df_query = pd.read_pickle('../user_data/data/offline/query.pkl')
 
         recall_path = '../user_data/data/offline'
+    elif mode == 'test':
+        df_click = pd.read_pickle('../user_data/data/offline/click.pkl')
+        df_query = pd.read_pickle('../user_data/data/offline/query.pkl')
+        recall_path = '../user_data/data/test'
+        
+        # 确保测试目录存在
+        os.makedirs(recall_path, exist_ok=True)
+        
+        log.info(f'测试模式：使用{recall_path}目录下的召回结果')
     else:
         df_click = pd.read_pickle('../user_data/data/online/click.pkl')
         df_query = pd.read_pickle('../user_data/data/online/query.pkl')
@@ -101,9 +111,18 @@ if __name__ == '__main__':
 
     log.debug(f'max_threads {max_threads}')
 
+    # 增加hot召回方法
+    # recall_methods = ['itemcf', 'w2v', 'binetwork', 'hot']
     recall_methods = ['itemcf', 'w2v', 'binetwork']
 
-    weights = {'itemcf': 1, 'binetwork': 1, 'w2v': 0.1}
+    # 调整召回权重
+    weights = {
+        'itemcf': 1.0, 
+        'binetwork': 1.0, 
+        'w2v': 0.1,
+        # 'hot': 0.1  # 降低热度召回的权重
+    }
+    
     recall_list = []
     recall_dict = {}
     for recall_method in recall_methods:
@@ -184,5 +203,7 @@ if __name__ == '__main__':
     # 保存到本地
     if mode == 'valid':
         df_useful_recall.to_pickle('../user_data/data/offline/recall.pkl')
+    elif mode == 'test':
+        df_useful_recall.to_pickle('../user_data/data/test/recall.pkl')
     else:
         df_useful_recall.to_pickle('../user_data/data/online/recall.pkl')

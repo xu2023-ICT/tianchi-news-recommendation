@@ -3,29 +3,18 @@ import math
 import os
 import pickle
 import random
-import signal
-from collections import defaultdict
-from random import shuffle
-
-import multitasking
-import numpy as np
 import pandas as pd
+import numpy as np
 from tqdm import tqdm
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
 
 from utils import Logger, evaluate
 
-max_threads = multitasking.config['CPU_CORES']
-multitasking.set_max_threads(max_threads)
-multitasking.set_engine('process')
-signal.signal(signal.SIGINT, multitasking.killall)
-
-random.seed(2020)
-
-# 命令行参数
+# 保持原有的参数解析代码
 parser = argparse.ArgumentParser(description='binetwork 召回')
 parser.add_argument('--mode', default='valid')
 parser.add_argument('--logfile', default='test.log')
-
 args = parser.parse_args()
 
 mode = args.mode
@@ -36,8 +25,8 @@ os.makedirs('../user_data/log', exist_ok=True)
 log = Logger(f'../user_data/log/{logfile}').logger
 log.info(f'binetwork 召回，mode: {mode}')
 
-
 def cal_sim(df):
+    """计算物品相似度"""
     user_item_ = df.groupby('user_id')['click_article_id'].agg(
         list).reset_index()
     user_item_dict = dict(
@@ -62,124 +51,104 @@ def cal_sim(df):
 
     return sim_dict, user_item_dict
 
+def recall_for_user(args):
+    """单个用户的召回处理函数"""
+    user_id, item_id, item_sim, user_item_dict = args
+    
+    if user_id not in user_item_dict:
+        return None
+        
+    rank = {}
+    interacted_items = user_item_dict[user_id]
+    interacted_items = interacted_items[::-1][:1]
 
-@multitasking.task
-def recall(df_query, item_sim, user_item_dict, worker_id):
-    data_list = []
+    for item in interacted_items:
+        for relate_item, wij in sorted(item_sim[item].items(),
+                                       key=lambda d: d[1],
+                                       reverse=True)[0:100]:
+            if relate_item not in interacted_items:
+                rank.setdefault(relate_item, 0)
+                rank[relate_item] += wij
 
-    for user_id, item_id in tqdm(df_query.values):
-        rank = {}
+    sim_items = sorted(rank.items(), key=lambda d: d[1], reverse=True)[:50]
+    
+    if not sim_items:
+        return None
+        
+    result_df = pd.DataFrame({
+        'user_id': [user_id] * len(sim_items),
+        'article_id': [x[0] for x in sim_items],
+        'sim_score': [x[1] for x in sim_items],
+        'label': [1 if x[0] == item_id else 0 for x in sim_items] if item_id != -1 
+                else [np.nan] * len(sim_items)
+    })
+    
+    return result_df
 
-        if user_id not in user_item_dict:
-            continue
-
-        interacted_items = user_item_dict[user_id]
-        interacted_items = interacted_items[::-1][:1]
-
-        for _, item in enumerate(interacted_items):
-            for relate_item, wij in sorted(item_sim[item].items(),
-                                           key=lambda d: d[1],
-                                           reverse=True)[0:100]:
-                if relate_item not in interacted_items:
-                    rank.setdefault(relate_item, 0)
-                    rank[relate_item] += wij
-
-        sim_items = sorted(rank.items(), key=lambda d: d[1], reverse=True)[:50]
-        item_ids = [item[0] for item in sim_items]
-        item_sim_scores = [item[1] for item in sim_items]
-
-        df_temp = pd.DataFrame()
-        df_temp['article_id'] = item_ids
-        df_temp['sim_score'] = item_sim_scores
-        df_temp['user_id'] = user_id
-
-        if item_id == -1:
-            df_temp['label'] = np.nan
-        else:
-            df_temp['label'] = 0
-            df_temp.loc[df_temp['article_id'] == item_id, 'label'] = 1
-
-        df_temp = df_temp[['user_id', 'article_id', 'sim_score', 'label']]
-        df_temp['user_id'] = df_temp['user_id'].astype('int')
-        df_temp['article_id'] = df_temp['article_id'].astype('int')
-
-        data_list.append(df_temp)
-
-    df_data = pd.concat(data_list, sort=False)
-
-    os.makedirs('../user_data/tmp/binetwork', exist_ok=True)
-    df_data.to_pickle(f'../user_data/tmp/binetwork/{worker_id}.pkl')
-
+def process_user_batch(user_batch_df, item_sim, user_item_dict):
+    """处理一批用户的召回"""
+    args_list = [(row['user_id'], row['click_article_id'], item_sim, user_item_dict) 
+                 for _, row in user_batch_df.iterrows()]
+    
+    with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
+        results = list(tqdm(executor.map(recall_for_user, args_list), 
+                          total=len(args_list)))
+    
+    # 过滤掉None结果并合并DataFrame
+    results = [df for df in results if df is not None]
+    if not results:
+        return pd.DataFrame()
+    return pd.concat(results, ignore_index=True)
 
 if __name__ == '__main__':
+    # 数据加载
     if mode == 'valid':
         df_click = pd.read_pickle('../user_data/data/offline/click.pkl')
         df_query = pd.read_pickle('../user_data/data/offline/query.pkl')
-
-        os.makedirs('../user_data/sim/offline', exist_ok=True)
         sim_pkl_file = '../user_data/sim/offline/binetwork_sim.pkl'
     else:
         df_click = pd.read_pickle('../user_data/data/online/click.pkl')
         df_query = pd.read_pickle('../user_data/data/online/query.pkl')
-
-        os.makedirs('../user_data/sim/online', exist_ok=True)
         sim_pkl_file = '../user_data/sim/online/binetwork_sim.pkl'
 
     log.debug(f'df_click shape: {df_click.shape}')
     log.debug(f'{df_click.head()}')
 
+    # 计算物品相似度
     item_sim, user_item_dict = cal_sim(df_click)
-    f = open(sim_pkl_file, 'wb')
-    pickle.dump(item_sim, f)
-    f.close()
+    
+    # 保存相似度矩阵
+    os.makedirs(os.path.dirname(sim_pkl_file), exist_ok=True)
+    with open(sim_pkl_file, 'wb') as f:
+        pickle.dump(item_sim, f)
 
-    # 召回
-    n_split = max_threads
-    all_users = df_query['user_id'].unique()
-    shuffle(all_users)
-    total = len(all_users)
-    n_len = total // n_split
-
-    # 清空临时文件夹
-    for path, _, file_list in os.walk('../user_data/tmp/binetwork'):
-        for file_name in file_list:
-            os.remove(os.path.join(path, file_name))
-
-    for i in range(0, total, n_len):
-        part_users = all_users[i:i + n_len]
-        df_temp = df_query[df_query['user_id'].isin(part_users)]
-        recall(df_temp, item_sim, user_item_dict, i)
-
-    multitasking.wait_for_tasks()
-    log.info('合并任务')
-
-    df_data = pd.DataFrame()
-    for path, _, file_list in os.walk('../user_data/tmp/binetwork'):
-        for file_name in file_list:
-            df_temp = pd.read_pickle(os.path.join(path, file_name))
-            df_data = df_data.append(df_temp)
-
-    # 必须加，对其进行排序
-    df_data = df_data.sort_values(['user_id', 'sim_score'],
-                                  ascending=[True,
-                                             False]).reset_index(drop=True)
-    log.debug(f'df_data.head: {df_data.head()}')
-
+    # 将用户分批处理
+    batch_size = 100  # 可以根据实际情况调整批次大小
+    user_batches = np.array_split(df_query, len(df_query) // batch_size + 1)
+    
+    # 处理每一批用户
+    results = []
+    for batch_df in tqdm(user_batches, desc="Processing user batches"):
+        batch_result = process_user_batch(batch_df, item_sim, user_item_dict)
+        if not batch_result.empty:
+            results.append(batch_result)
+    
+    # 合并所有结果
+    df_final = pd.concat(results, ignore_index=True)
+    
+    # 排序和保存结果
+    df_final = df_final.sort_values(['user_id', 'sim_score'],
+                                   ascending=[True, False]).reset_index(drop=True)
+    
     # 计算召回指标
     if mode == 'valid':
-        log.info(f'计算召回指标')
-
+        log.info('计算召回指标')
         total = df_query[df_query['click_article_id'] != -1].user_id.nunique()
-
-        hitrate_5, mrr_5, hitrate_10, mrr_10, hitrate_20, mrr_20, hitrate_40, mrr_40, hitrate_50, mrr_50 = evaluate(
-            df_data[df_data['label'].notnull()], total)
-
-        log.debug(
-            f'binetwork: {hitrate_5}, {mrr_5}, {hitrate_10}, {mrr_10}, {hitrate_20}, {mrr_20}, {hitrate_40}, {mrr_40}, {hitrate_50}, {mrr_50}'
-        )
-
+        metrics = evaluate(df_final[df_final['label'].notnull()], total)
+        log.debug(f'binetwork metrics: {metrics}')
+    
     # 保存召回结果
-    if mode == 'valid':
-        df_data.to_pickle('../user_data/data/offline/recall_binetwork.pkl')
-    else:
-        df_data.to_pickle('../user_data/data/online/recall_binetwork.pkl')
+    output_path = '../user_data/data/offline' if mode == 'valid' else '../user_data/data/online'
+    output_file = f'{output_path}/recall_binetwork.pkl'
+    os.makedirs(output_path, exist_ok=True)
+    df_final.to_pickle(output_file)
