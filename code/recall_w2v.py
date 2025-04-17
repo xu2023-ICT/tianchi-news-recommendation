@@ -15,7 +15,7 @@ from utils import Logger, evaluate
 
 warnings.filterwarnings('ignore')
 seed = 2020
-random.seed(2020)
+random.seed(seed)
 
 # 命令行参数
 parser = argparse.ArgumentParser(description='w2v 召回')
@@ -28,6 +28,7 @@ args = parser.parse_args()
 mode = args.mode
 logfile = args.logfile
 test_size = args.test_size
+
 # 初始化日志
 os.makedirs('../user_data/log', exist_ok=True)
 log = Logger(f'../user_data/log/{logfile}').logger
@@ -51,16 +52,16 @@ def word2vec(df_, f1, f2, model_path):
     if os.path.exists(f'{model_path}/w2v.m'):
         model = Word2Vec.load(f'{model_path}/w2v.m')
     else:
-        model = Word2Vec(sentences=sentences,
-                         vector_size=256,
+        model = Word2Vec(size=256,          # gensim 3.x 用 size
                          window=3,
                          min_count=1,
                          sg=1,
                          hs=0,
                          seed=seed,
                          negative=5,
-                         workers=10,
-                         epochs=1)
+                         workers=10)
+        model.build_vocab(sentences)
+        model.train(sentences, total_examples=len(sentences), epochs=1)
         model.save(f'{model_path}/w2v.m')
 
     article_vec_map = {}
@@ -76,7 +77,7 @@ def recall(df_query, article_vec_map, article_index, user_item_dict):
 
     for user_id, item_id in tqdm(df_query.values):
         rank = defaultdict(int)
-        
+
         if user_id not in user_item_dict:
             continue
 
@@ -86,7 +87,7 @@ def recall(df_query, article_vec_map, article_index, user_item_dict):
         for item in interacted_items:
             if item not in article_vec_map:
                 continue
-                
+
             article_vec = article_vec_map[item]
 
             item_ids, distances = article_index.get_nns_by_vector(
@@ -133,20 +134,18 @@ if __name__ == '__main__':
         w2v_file = '../user_data/data/offline/article_w2v.pkl'
         model_path = '../user_data/model/offline'
     elif mode == 'test':
-        # 测试模式：读取部分数据
         df_click = pd.read_pickle('../user_data/data/offline/click.pkl')
         df_query = pd.read_pickle('../user_data/data/offline/query.pkl')
-        
-        # 随机选择一部分用户
+
         test_users = df_query['user_id'].sample(n=test_size, random_state=2024)
         df_query = df_query[df_query['user_id'].isin(test_users)]
         df_click = df_click[df_click['user_id'].isin(test_users)]
-        
+
         os.makedirs('../user_data/data/test', exist_ok=True)
         os.makedirs('../user_data/model/test', exist_ok=True)
         w2v_file = '../user_data/data/test/article_w2v.pkl'
         model_path = '../user_data/model/test'
-        
+
         log.info(f'测试模式：选取{test_size}个用户')
         log.info(f'df_click shape: {df_click.shape}')
         log.info(f'df_query shape: {df_query.shape}')
@@ -163,13 +162,10 @@ if __name__ == '__main__':
     log.debug(f'df_click shape: {df_click.shape}')
     log.debug(f'{df_click.head()}')
 
-    article_vec_map = word2vec(df_click, 'user_id', 'click_article_id',
-                               model_path)
-    f = open(w2v_file, 'wb')
-    pickle.dump(article_vec_map, f)
-    f.close()
+    article_vec_map = word2vec(df_click, 'user_id', 'click_article_id', model_path)
+    with open(w2v_file, 'wb') as f:
+        pickle.dump(article_vec_map, f)
 
-    # 将 embedding 建立索引
     article_index = AnnoyIndex(256, 'angular')
     article_index.set_seed(2020)
 
@@ -180,30 +176,23 @@ if __name__ == '__main__':
 
     user_item_ = df_click.groupby('user_id')['click_article_id'].agg(
         lambda x: list(x)).reset_index()
-    user_item_dict = dict(
-        zip(user_item_['user_id'], user_item_['click_article_id']))
+    user_item_dict = dict(zip(user_item_['user_id'], user_item_['click_article_id']))
 
-    # 召回
     df_data = recall(df_query, article_vec_map, article_index, user_item_dict)
 
-    # 对结果进行排序
     df_data = df_data.sort_values(['user_id', 'sim_score'],
                                   ascending=[True, False]).reset_index(drop=True)
     log.debug(f'df_data.head: {df_data.head()}')
 
-    # 计算召回指标
     if mode == 'valid':
         log.info(f'计算召回指标')
-
         total = df_query[df_query['click_article_id'] != -1].user_id.nunique()
-
         hitrate_5, mrr_5, hitrate_10, mrr_10, hitrate_20, mrr_20, hitrate_40, mrr_40, hitrate_50, mrr_50 = evaluate(
             df_data[df_data['label'].notnull()], total)
-
         log.debug(
             f'w2v: {hitrate_5}, {mrr_5}, {hitrate_10}, {mrr_10}, {hitrate_20}, {mrr_20}, {hitrate_40}, {mrr_40}, {hitrate_50}, {mrr_50}'
         )
-    # 保存召回结果
+
     if mode == 'valid':
         df_data.to_pickle('../user_data/data/offline/recall_w2v.pkl')
     elif mode == 'test':
