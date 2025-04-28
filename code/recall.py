@@ -40,7 +40,7 @@ os.makedirs('../user_data/log', exist_ok=True)
 log = Logger(f'../user_data/log/{logfile}').logger
 log.info(f'召回合并: {mode}')
 
-
+# 对所有用户的sim_score进行归一化
 def mms(df):
     user_score_max = {}
     user_score_min = {}
@@ -48,9 +48,11 @@ def mms(df):
     # 获取用户下的相似度的最大值和最小值
     for user_id, g in df[['user_id', 'sim_score']].groupby('user_id'):
         scores = g['sim_score'].values.tolist()
+        # 返回第一名和最后一名？ 还需确认
         user_score_max[user_id] = scores[0]
         user_score_min[user_id] = scores[-1]
-
+    
+    # 归一化处理
     ans = []
     for user_id, sim_score in tqdm(df[['user_id', 'sim_score']].values):
         ans.append((sim_score - user_score_min[user_id]) /
@@ -123,16 +125,20 @@ if __name__ == '__main__':
         # 'hot': 0.1  # 降低热度召回的权重
     }
     
+    # 保存所有召回结果
     recall_list = []
+    # 方法名 -> 召回结果
     recall_dict = {}
     for recall_method in recall_methods:
         recall_result = pd.read_pickle(
             f'{recall_path}/recall_{recall_method}.pkl')
         weight = weights[recall_method]
 
+        # 归一化并乘以权重
         recall_result['sim_score'] = mms(recall_result)
         recall_result['sim_score'] = recall_result['sim_score'] * weight
 
+        # 记录
         recall_list.append(recall_result)
         recall_dict[recall_method] = recall_result
 
@@ -142,13 +148,14 @@ if __name__ == '__main__':
                                   recall_dict[recall_method2])
         log.debug(f'召回相似度 {recall_method1}-{recall_method2}: {score}')
 
-    # 合并召回结果
+    # 按照user+item分组，sim_score求和，作为最终得分
     recall_final = pd.concat(recall_list, sort=False)
     recall_score = recall_final[['user_id', 'article_id',
                                  'sim_score']].groupby([
                                      'user_id', 'article_id'
                                  ])['sim_score'].sum().reset_index()
 
+    #去重 合并相似度得分
     recall_final = recall_final[['user_id', 'article_id', 'label'
                                  ]].drop_duplicates(['user_id', 'article_id'])
     recall_final = recall_final.merge(recall_score, how='left')
@@ -177,6 +184,7 @@ if __name__ == '__main__':
     df_useful_recall = pd.concat(useful_recall, sort=False)
     log.debug(f'df_useful_recall: {df_useful_recall.head()}')
 
+    # 最终结果再次排序，确保输出顺序合理
     df_useful_recall = df_useful_recall.sort_values(
         ['user_id', 'sim_score'], ascending=[True,
                                              False]).reset_index(drop=True)

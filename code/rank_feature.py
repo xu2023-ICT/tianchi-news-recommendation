@@ -379,39 +379,6 @@ if __name__ == '__main__':
     log.debug(f'df_feature.shape: {df_feature.shape}')
     log.debug(f'df_feature.columns: {df_feature.columns.tolist()}')
 
-    """
-    # 加载热度召回的相似度文件
-    if mode == 'valid':
-        f = open('../user_data/data/offline/article_hot_dict.pkl', 'rb')
-    elif mode == 'test':
-        f = open('../user_data/data/test/article_hot_dict.pkl', 'rb')
-    else:
-        f = open('../user_data/data/online/article_hot_dict.pkl', 'rb')
-    article_hot_dict = pickle.load(f)
-    f.close()
-
-    # 添加热度相关特征
-    df_feature['article_hot_score'] = df_feature.apply(func_hot_score, axis=1)
-    df_feature['article_time_decay_hot_score'] = df_feature.apply(func_time_decay_hot, axis=1)
-
-    # 计算用户历史点击文章的平均热度
-    df_temp = df_click.copy()
-    df_temp['article_hot_score'] = df_temp.apply(func_hot_score, axis=1)
-    df_temp = df_temp.groupby('user_id')['article_hot_score'].agg({
-        'user_hist_articles_mean_hot': 'mean',
-        'user_hist_articles_max_hot': 'max',
-        'user_last_article_hot': lambda x: x.iloc[-1]
-    }).reset_index()
-    df_feature = df_feature.merge(df_temp, how='left')
-
-    # 添加相对热度特征
-    df_feature['article_hot_score_diff_mean'] = df_feature['article_hot_score'] - df_feature['user_hist_articles_mean_hot']
-    df_feature['article_hot_score_diff_last'] = df_feature['article_hot_score'] - df_feature['user_last_article_hot']
-    
-    log.debug(f'添加热度特征后 df_feature.shape: {df_feature.shape}')
-    log.debug(f'热度特征列: {[col for col in df_feature.columns if "hot" in col]}') 
-    """
-
     # 保存特征文件
     if mode == 'valid':
         df_feature.to_pickle('../user_data/data/offline/feature.pkl')

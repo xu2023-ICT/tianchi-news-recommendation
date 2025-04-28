@@ -27,39 +27,45 @@ log.info(f'数据处理，mode: {mode}')
 
 
 def data_offline(df_train_click, df_test_click):
-    train_users = df_train_click['user_id'].values.tolist()
-    # 随机采样出一部分样本
-    val_users = sample(train_users, 50000)
-    log.debug(f'val_users num: {len(set(val_users))}')
+    '''
+    将df_train_click中五万个用户最后一条id作为测试集
+    返回df_query是最后一条点击
+    返回df_click除五万个用户之外的所有用户点击,并且按照用户id和时间戳排序返回
+    '''
+    train_users = df_train_click['user_id'].values.tolist() #先转numpy 再转list
+    val_users = sample(train_users, 50000) #随机抽取五万用户作为验证集，每个用户取最后一条文章id
+    log.debug(f'val_users num: {len(set(val_users))}') 
 
-    # 训练集用户 抽出行为数据最后一条作为线下验证集
-    click_list = []
-    valid_query_list = []
+    # 训练集用户 抽出行为数据最后一条作为线下验证集 
+    click_list = [] #由两部分组成，一部分是train_click（train_click是在val_user中除了最后一条之外所有的交互，另一部分是不在val_uesrs
+    valid_query_list = [] #在val_users中，只包含用户的最后一条交互信息
 
     groups = df_train_click.groupby(['user_id'])
-    for user_id, g in tqdm(groups):
+    for user_id, group in tqdm(groups):
         if user_id in val_users:
-            valid_query = g.tail(1)
+            valid_query = group.tail(1)
             valid_query_list.append(
-                valid_query[['user_id', 'click_article_id']])
+                valid_query[['user_id', 'click_article_id']]) #取每个用户id中最后一个点击的文章id
 
-            train_click = g.head(g.shape[0] - 1)
-            click_list.append(train_click)
+            train_click = group.head(group.shape[0] - 1)# 取出用户最后一条之外的所有信息
+            click_list.append(train_click) # 
         else:
-            click_list.append(g)
+            click_list.append(group)
 
+    # 将click_list valid_query_list重新拼接
     df_train_click = pd.concat(click_list, sort=False)
     df_valid_query = pd.concat(valid_query_list, sort=False)
 
-    test_users = df_test_click['user_id'].unique()
+
+    test_users = df_test_click['user_id'].unique() 
     test_query_list = []
 
     for user in tqdm(test_users):
         test_query_list.append([user, -1])
-
+    #测试集用户也是只取最后一条记录
     df_test_query = pd.DataFrame(test_query_list,
                                  columns=['user_id', 'click_article_id'])
-
+    
     df_query = pd.concat([df_valid_query, df_test_query],
                          sort=False).reset_index(drop=True)
     df_click = pd.concat([df_train_click, df_test_click],
@@ -79,10 +85,12 @@ def data_offline(df_train_click, df_test_click):
     df_query.to_pickle('../user_data/data/offline/query.pkl')
 
 
+#用于上传数据时所需要的数据处理
 def data_online(df_train_click, df_test_click):
     test_users = df_test_click['user_id'].unique()
     test_query_list = []
 
+    # 这里添加表示不知道用户最后会点击什么，-1表示不知道
     for user in tqdm(test_users):
         test_query_list.append([user, -1])
 
@@ -97,6 +105,7 @@ def data_online(df_train_click, df_test_click):
 
     log.debug(
         f'df_query shape: {df_query.shape}, df_click shape: {df_click.shape}')
+    
     log.debug(f'{df_query.head()}')
     log.debug(f'{df_click.head()}')
 

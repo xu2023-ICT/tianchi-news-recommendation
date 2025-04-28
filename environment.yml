@@ -1,0 +1,46 @@
+name: tianchi
+channels:
+  - defaults
+  - https://repo.anaconda.com/pkgs/main
+  - https://repo.anaconda.com/pkgs/r
+dependencies:
+  - _libgcc_mutex=0.1=main
+  - _openmp_mutex=5.1=1_gnu
+  - ca-certificates=2025.2.25=h06a4308_0
+  - certifi=2022.12.7=py37h06a4308_0
+  - ld_impl_linux-64=2.40=h12ee557_0
+  - libffi=3.4.4=h6a678d5_1
+  - libgcc-ng=11.2.0=h1234567_1
+  - libgomp=11.2.0=h1234567_1
+  - libstdcxx-ng=11.2.0=h1234567_1
+  - ncurses=6.4=h6a678d5_0
+  - openssl=1.1.1w=h7f8727e_0
+  - pip=22.3.1=py37h06a4308_0
+  - python=3.7.16=h7a1cb2a_0
+  - readline=8.2=h5eee18b_0
+  - setuptools=65.6.3=py37h06a4308_0
+  - sqlite=3.45.3=h5eee18b_0
+  - tk=8.6.14=h39e8969_0
+  - wheel=0.38.4=py37h06a4308_0
+  - xz=5.6.4=h5eee18b_1
+  - zlib=1.2.13=h5eee18b_1
+  - pip:
+      - annoy==1.17.0
+      - dill==0.3.7
+      - gensim==3.8.3
+      - joblib==0.17.0
+      - lightgbm==3.0.0
+      - multitasking==0.0.9
+      - numpy==1.19.2
+      - pandarallel==1.5.1
+      - pandas==0.25.3
+      - python-dateutil==2.9.0.post0
+      - pytz==2025.2
+      - scikit-learn==0.24.0
+      - scipy==1.7.3
+      - six==1.17.0
+      - smart-open==7.1.0
+      - threadpoolctl==3.1.0
+      - tqdm==4.50.2
+      - wrapt==1.16.0
+prefix: /home/xzq/anaconda3/envs/tianchi

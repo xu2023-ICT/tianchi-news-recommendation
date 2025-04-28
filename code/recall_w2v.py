@@ -32,38 +32,55 @@ test_size = args.test_size
 # 初始化日志
 os.makedirs('../user_data/log', exist_ok=True)
 log = Logger(f'../user_data/log/{logfile}').logger
-log.info(f'w2v 召回，mode: {mode}')
+log.info(f'w2v 召回,mode: {mode}')
 
+#使用 Word2Vec 算法学习用户行为(如点击物品)对应的词向量。
 
+# 使用 Annoy 建立物品的索引,基于向量进行相似度计算。
+
+# article_vec_map = word2vec(df_click, 'user_id', 'click_article_id', model_path)
 def word2vec(df_, f1, f2, model_path):
+    '''
+    输入的 df_ 数据框按用户(f1)分组,获取每个用户的点击历史(f2)。
+
+    通过 Word2Vec 算法训练词向量(通过设置 sg=1,使用 Skip-Gram 模型)。
+
+    如果已有训练好的模型(w2v.m),则加载模型；否则训练新的模型并保存。
+    '''
     df = df_.copy()
+    # 按照用户id分组分组，然后只要click_article_id部分，将其命名为{}_{}_list'.format(f1, f2)，并转换为列表
     tmp = df.groupby(f1, as_index=False)[f2].agg(
         {'{}_{}_list'.format(f1, f2): list})
-
+    # 获取所有用户的点击历史
     sentences = tmp['{}_{}_list'.format(f1, f2)].values.tolist()
+    # 删除'{}_{}_list'.format(f1, f2)列
     del tmp['{}_{}_list'.format(f1, f2)]
 
+    # words是所有的交互历史，下面循环就是将sentences所有元素变成字符串，然后用一个words整体存起来
     words = []
     for i in range(len(sentences)):
         x = [str(x) for x in sentences[i]]
         sentences[i] = x
         words += x
 
+    # 存在就读取，不存在就创建
     if os.path.exists(f'{model_path}/w2v.m'):
         model = Word2Vec.load(f'{model_path}/w2v.m')
     else:
         model = Word2Vec(size=256,          # gensim 3.x 用 size
                          window=3,
                          min_count=1,
-                         sg=1,
-                         hs=0,
-                         seed=seed,
-                         negative=5,
-                         workers=10)
-        model.build_vocab(sentences)
+                         sg=1, # 使用skip-Gram模型（如果是0，则使用CBWO）
+                         hs=0, #不使用层次softmax
+                         seed=seed, 
+                         negative=5, # 负采样的负样本数
+                         workers=10 # 线程数
+                         ) 
+        model.build_vocab(sentences) # 构建词汇表
         model.train(sentences, total_examples=len(sentences), epochs=1)
         model.save(f'{model_path}/w2v.m')
 
+    # 构建物品ID到词向量的映射
     article_vec_map = {}
     for word in set(words):
         if word in model.wv:
@@ -71,8 +88,16 @@ def word2vec(df_, f1, f2, model_path):
 
     return article_vec_map
 
-
+# df_data = recall(df_query, article_vec_map, article_index, user_item_dict)
 def recall(df_query, article_vec_map, article_index, user_item_dict):
+    '''
+    该函数通过用户的点击历史(user_item_dict)和物品的嵌入向量(article_vec_map)计算相似物品。
+
+    对于每个用户，获取最近点击的物品，并计算与该物品相似的其他物品(最多返回 100 个)。
+
+    计算相似度分数并将结果存储到 DataFrame 中。
+    '''
+    # 存储每个用户的推荐结果
     data_list = []
 
     for user_id, item_id in tqdm(df_query.values):
@@ -81,23 +106,34 @@ def recall(df_query, article_vec_map, article_index, user_item_dict):
         if user_id not in user_item_dict:
             continue
 
-        interacted_items = user_item_dict[user_id]
-        interacted_items = interacted_items[-1:]
+        interacted_items = user_item_dict[user_id] # 获取点击物品列表
+        interacted_items = interacted_items[-1:] # 只取最近一次点击的物品
 
+        # 遍历用户最近点击的物品
         for item in interacted_items:
+            # 如果不在物品的词向量，就跳过
             if item not in article_vec_map:
                 continue
 
+            # 获取物品的词向量
             article_vec = article_vec_map[item]
 
+            # 使用Annoy索引获取与该物品最相似的100个物品
             item_ids, distances = article_index.get_nns_by_vector(
                 article_vec, 100, include_distances=True)
+            # 计算相似度分数,这里使用了Annoy的计算公式
             sim_scores = [2 - distance for distance in distances]
 
+            # 将相似物品添加到rank字典中
             for relate_item, wij in zip(item_ids, sim_scores):
                 if relate_item not in interacted_items:
                     rank.setdefault(relate_item, 0)
-                    rank[relate_item] += wij
+                    rank[relate_item] += wij # 累加相似度分数 ???这里为什么要累加，
+
+            '''
+            这里的rank确实毫无必要，因为只是取一个物品
+            但是如果取三个物品，rank就有相加的必要了
+            '''
 
         sim_items = sorted(rank.items(), key=lambda d: d[1], reverse=True)[:50]
         item_ids = [item[0] for item in sim_items]
